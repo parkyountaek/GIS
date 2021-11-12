@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/openlayers/openlayers.github.io@master/en/v6.9.0/css/ol.css" type="text/css">
+    <style>
+      .map {
+        height: 800px;
+        width: 100%;
+      }
+    </style>
+    <script src="https://cdn.jsdelivr.net/gh/openlayers/openlayers.github.io@master/en/v6.9.0/build/ol.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.3.15/proj4.js"></script>
+    <title>CAD TEST</title>
+  </head>
+  <body>
+    <h2>CAD_TO_GEOJSON_CHECK</h2>
+    <input type='file' id='fileinput'>
+    <input type='button' id='btnLoad' value='Load' onclick='loadFile();'>
+    <div id="map" class="map"></div>
+    <script type="text/javascript">
+      proj4.defs("EPSG:5186","+proj=tmerc +lat_0=38 +lon_0=127 +k=1 +x_0=200000 +y_0=600000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs");
+      proj4.defs("EPSG:5187","+proj=tmerc +lat_0=38 +lon_0=129 +k=1 +x_0=200000 +y_0=600000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs");
+      ol.proj.proj4.register(proj4);
+
+      // TEXT, SPLINE, SOLID, POLYLINE, POINT, MTEXT, LWPOLYLINE, LINE, LEADER, CIRCLE, ARC
+      let set_projection = 'EPSG:5186';
+      let styleCache = new Array();
+
+      function convertColorString2Arr(color, opacity){
+        let colorArray = ol.color.asArray(color);
+        colorArray[3]=opacity;
+        return colorArray
+      }
+
+      function styleFunction (feature, resolution){
+        let id = feature.getId();
+        if(!styleCache[parseInt(id)]){
+          let origin = feature.getProperties().color;
+          let color = convertColorString2Arr(origin, 1);
+          let method = feature.getProperties().actype;
+          if(method.indexOf("TEXT") != -1){
+            let text = feature.getProperties().text;
+            let rotation = feature.getProperties().rotation;
+            let resoultion = map.getView().getResolution();
+            let size = parseInt(feature.getProperties().textHeight/(resoultion));
+            let font = `Bold ${size}px/1 Arial`;
+            let align = "center";
+            let style = new ol.style.Style({
+              text: new ol.style.Text({
+                text: text,
+                fill: new ol.style.Fill({
+                  color: color
+                }),
+                weight: "Bold",
+                rotation: map.getView().getRotation()+rotation,
+                textAlign: align,
+                // textBaseline: baseLine,
+                font: font
+              })
+            })
+            return [style];
+          } else if(method.indexOf("CIRCLE") != -1){
+            let style = new ol.style.Style({
+              stroke: new ol.style.Stroke({
+                color: color,
+                width: 1,
+              }),
+            })
+            styleCache[parseInt(id)] = style;
+            return [style];
+          } else if(method.indexOf("POLYGON") != -1 || method.indexOf("POLYLINE") != -1 || method.indexOf("LEADER") != -1 || method.indexOf("ARC") != -1 || method.indexOf("LINE") != -1 || method.indexOf("SOLID") != -1 || method.indexOf("SPLINE") != -1 || method.indexOf("POINT") != -1){
+            let style = new ol.style.Style({
+              fill: new ol.style.Fill({
+                color: color
+              }),
+              stroke: new ol.style.Stroke({
+                color: color,
+                width: 1,
+              }),
+              image: new ol.style.Circle({
+                radius: 1,
+                fill: new ol.style.Fill({
+                  color: color,
+                }),
+                stroke: new ol.style.Stroke({
+                  color: color,
+                  width: 1,
+                }),
+              }),
+            })
+            styleCache[parseInt(id)] = style;
+            return [style];
+          } else {
+            console.log(method)
+            return []
+          }
+        } else {
+          return [styleCache[parseInt(id)]];
+        }
+      }
+
+      let source = new ol.source.Vector()
+      let vectorLayer = new ol.layer.Vector({
+        source: source,
+        style: styleFunction
+      })
+
+      let map = new ol.Map({
+        target: 'map',
+        layers: [
+          new ol.layer.Tile({
+            source: new ol.source.OSM()
+          }),
+          vectorLayer,
+        ],
+        view: new ol.View({
+          center: ol.proj.fromLonLat([37.41, 8.82]),
+          zoom: 4
+        })
+      });
+
+      let selectControl = new ol.interaction.Select({
+        multi: false,
+      })
+      selectControl.on('select', (e)=>{
+        if(e.selected.length !== 0)
+          console.log(e.selected[0].getProperties());
+      })
+      map.addInteraction(selectControl);
+      function addVector(json) {
+        let index = 0;
+        json.forEach(j => {
+          index+=1;
+          let vector = new ol.format.GeoJSON().readFeature(j, {
+            dataProjection: set_projection,
+            featureProjection: set_projection
+          })
+          let props = vector.getProperties()
+          if(vector.getProperties().actype === "CIRCLE"){
+            let converter = new ol.Feature(new ol.geom.Circle(props.geometry.flatCoordinates, props.radius))
+            converter.set("actype", "CIRCLE")
+            converter.set("color", props.color)
+            converter.set("coordinates", props.geometry.flatCoordinates)
+            vector = converter
+          }
+          vector.getGeometry().transform(set_projection, 'EPSG:3857')
+          if(props.rotation && props.origin){
+            vector.getGeometry().rotate(Math.PI/180*props.rotation, ol.proj.transform(props.origin, set_projection, "EPSG:3857"))
+          }
+          vector.setId(index.toString())
+          vectorLayer.getSource().addFeature(vector);
+          map.getView().fit(vector.getGeometry().getExtent());
+          // console.log(vectorLayer.getStyleFunction())
+        })
+        console.log("Object count is", index);
+      }
+
+      let newArr = [];
+      function loadFile() {
+        let input, file, fr;
+
+        if (typeof window.FileReader !== 'function') {
+          alert("The file API isn't supported on this browser yet.");
+          return;
+        }
+
+        input = document.getElementById('fileinput');
+        if (!input) {
+          alert("Um, couldn't find the fileinput element.");
+        }
+        else if (!input.files) {
+          alert("This browser doesn't seem to support the `files` property of file inputs.");
+        }
+        else if (!input.files[0]) {
+          alert("Please select a file before clicking 'Load'");
+        }
+        else {
+          file = input.files[0];
+          fr = new FileReader();
+          fr.onload = receivedText;
+          fr.readAsText(file);
+        }
+
+        function receivedText(e) {
+          let lines = e.target.result;
+          newArr = JSON.parse(lines); 
+          addVector(newArr)
+        }
+      }
+
+
+    </script>
+  </body>
+</html>
